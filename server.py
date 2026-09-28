@@ -10,7 +10,7 @@ BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 
 from mcp.server.mcpserver import MCPServer
-from spruthub_client import SprutHubClient
+from spruthub_client import SprutHubClient, load_config
 
 # Configure logging to stderr (stdio is reserved for JSON-RPC MCP messages)
 logging.basicConfig(
@@ -20,19 +20,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("spruthub-mcp")
 
-# Load configuration
-config_path = BASE_DIR / "config.json"
-config = {}
-if config_path.exists():
-    try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = json.load(f)
-    except Exception as e:
-        logger.error(f"Error loading config.json: {e}")
+# Load configuration (env vars > XDG/AppData > local config.json)
+config = load_config()
 
-WS_URL = os.environ.get("SPRUTHUB_WS_URL", config.get("ws_url", "ws://127.0.0.1/spruthub"))
-TOKEN = os.environ.get("SPRUTHUB_TOKEN", config.get("token", ""))
-SERIAL = os.environ.get("SPRUTHUB_SERIAL", config.get("serial", None))
+WS_URL = config.get("ws_url", "ws://127.0.0.1/spruthub")
+TOKEN = config.get("token", "")
+SERIAL = config.get("serial", None)
 
 if not TOKEN:
     logger.warning("SPRUTHUB_TOKEN is not set. Tools requiring hub communication will fail until configured.")

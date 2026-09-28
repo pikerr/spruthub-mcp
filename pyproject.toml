@@ -19,6 +19,7 @@ dependencies = [
 
 [project.scripts]
 spruthub-mcp = "server:main"
+spruthub-cli = "cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["."]

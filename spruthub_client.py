@@ -4,7 +4,54 @@ import logging
 import websockets
 from typing import Any, Dict, List, Optional
 
+import os
+from pathlib import Path
+
 logger = logging.getLogger("spruthub")
+
+
+def load_config() -> dict[str, Any]:
+    """Load SprutHub configuration from env vars, XDG/AppData, or local config.json."""
+    config: dict[str, Any] = {}
+
+    # 1. Check local file (development / workspace)
+    local_cfg = Path("config.json")
+    if local_cfg.exists():
+        try:
+            with open(local_cfg, "r", encoding="utf-8") as f:
+                config.update(json.load(f))
+        except Exception as e:
+            logger.debug(f"Failed to load {local_cfg}: {e}")
+
+    # 2. Check XDG / system config (~/.config/spruthub/config.json or %APPDATA%/spruthub/config.json)
+    if os.name == "nt":
+        appdata = os.environ.get("APPDATA")
+        sys_cfg = Path(appdata) / "spruthub" / "config.json" if appdata else None
+    else:
+        xdg_home = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
+        sys_cfg = Path(xdg_home) / "spruthub" / "config.json"
+
+    if sys_cfg and sys_cfg.exists():
+        try:
+            with open(sys_cfg, "r", encoding="utf-8") as f:
+                for k, v in json.load(f).items():
+                    if k not in config:
+                        config[k] = v
+        except Exception as e:
+            logger.debug(f"Failed to load {sys_cfg}: {e}")
+
+    # 3. Environment variables have the highest priority
+    if os.environ.get("SPRUTHUB_WS_URL"):
+        config["ws_url"] = os.environ["SPRUTHUB_WS_URL"]
+    if os.environ.get("SPRUTHUB_TOKEN"):
+        config["token"] = os.environ["SPRUTHUB_TOKEN"]
+    if os.environ.get("SPRUTHUB_SERIAL"):
+        config["serial"] = os.environ["SPRUTHUB_SERIAL"]
+
+    if "ws_url" not in config:
+        config["ws_url"] = "ws://127.0.0.1/spruthub"
+
+    return config
 
 class SprutHubClient:
     def __init__(self, ws_url: str, token: str, serial: Optional[str] = None):
