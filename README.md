@@ -56,14 +56,27 @@ flowchart TD
 
 ## Инструменты и команды
 
-| Команда CLI | MCP Tool | Описание |
-|---|---|---|
-| `spruthub-cli info` | `sprut_get_hub_info` | Информация о контроллере (имя, модель, серийник, версия ПО, онлайн-статус). |
-| `spruthub-cli rooms` | `sprut_list_rooms` | Список комнат с ID, названиями, активными сенсорами и действиями. |
-| `spruthub-cli devices [--room ID]` | `sprut_list_devices` | Компактный список устройств и их текущих состояний. |
-| `spruthub-cli device <ID>` | `sprut_get_device` | Полная развернутая информация об аксессуаре. |
-| `spruthub-cli switch <ID> <on/off>`| `sprut_set_switch` | Быстрое включение/выключение любого реле, выключателя, розетки или лампы. |
-| `spruthub-cli set <aId> <sId> <cId> <val>` | `sprut_set_characteristic` | Универсальная установка любого значения характеристики (яркость, температура, режим). |
+| Категория | Команда CLI | MCP Tool | Описание |
+|---|---|---|---|
+| **Хаб и система** | `spruthub-cli info` | `sprut_get_hub_info` | Информация о контроллере (имя, модель, серийник, версия ПО, онлайн-статус). |
+| | `spruthub-cli restart [--yes]` | `sprut_restart_hub` | Перезагрузка контроллера / службы SprutHub. |
+| **Комнаты** | `spruthub-cli rooms` | `sprut_list_rooms` | Список комнат со сводкой датчиков в реальном времени. |
+| | `spruthub-cli room create <name>` | `sprut_create_room` | Создание новой комнаты. |
+| | `spruthub-cli room rename <id> <name>` | `sprut_update_room` | Переименование существующей комнаты. |
+| | `spruthub-cli room delete <id> [--yes]`| `sprut_delete_room` | Удаление комнаты (с подтверждением). |
+| **Устройства** | `spruthub-cli devices [--room ID] [-s query]` | `sprut_list_devices` | Список устройств и их текущих состояний (с фильтрацией). |
+| | `spruthub-cli device <ID>` | `sprut_get_device` | Полная развернутая структура аксессуара (сервисы, характеристики, метаданные). |
+| | `spruthub-cli switch <ID> <on/off>` | `sprut_set_switch` | Быстрое включение/выключение любого реле, выключателя, розетки или лампы. |
+| | `spruthub-cli set <aId> <sId> <cId> <val>` | `sprut_set_characteristic` | Установка любого значения характеристики (яркость, температура, режим). |
+| **История и датчики** | `spruthub-cli history <ID> [char] [--days N]` | `sprut_get_history` | Выгрузка временных рядов, расчет аналитики (min/max/avg/delta) и дневных сводок. |
+| **Сценарии** | `spruthub-cli scenarios [-s query]` | `sprut_list_scenarios` | Список настроенных сценариев автоматизации и их статус. |
+| | `spruthub-cli scenario run <name_or_idx>` | `sprut_run_scenario` | Запуск сценария автоматизации по имени или индексу. |
+| **Диагностика** | `spruthub-cli logs [--count N] [--level LVL]` | `sprut_get_logs` | Просмотр системных логов контроллера и ошибок драйверов. |
+| | `spruthub-cli extensions` | `sprut_list_extensions` | Статус всех протокольных расширений (Zigbee, BLE, HomeKit, MQTT и др.). |
+| **Каталог шаблонов**| `spruthub-cli catalog list [-s query]` | `sprut_list_catalog` | Поиск и просмотр шаблонов поддерживаемых устройств в каталоге. |
+| | `spruthub-cli catalog get <model_or_file>` | `sprut_get_catalog_template` | Получение схемы и маппинга сервисов конкретного шаблона оборудования. |
+
+> 📖 **Полная документация низкоуровневого протокола:** [docs/SPRUTHUB_API.md](docs/SPRUTHUB_API.md) — карта всех 18 модулей и 62 RPC-методов ядра SprutHub.
 
 ---
 

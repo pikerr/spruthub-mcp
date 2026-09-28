@@ -208,6 +208,204 @@ async def sprut_set_characteristic(
     return f"Success: Accessory {accessory_id} [{service_id}.{characteristic_id}] updated to {value}"
 
 
+@app.tool()
+async def sprut_get_history(
+    accessory_id: int,
+    service_id: Optional[int] = None,
+    characteristic_id: Optional[int] = None,
+    days: Optional[float] = None,
+    hours: Optional[float] = None,
+    limit: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Retrieve historical telemetry data and statistics for sensor or accessory characteristics.
+    
+    Args:
+        accessory_id: ID of the accessory.
+        service_id: Optional Service ID (sId).
+        characteristic_id: Optional Characteristic ID (cId).
+        days: Optional time window in days (e.g. 7).
+        hours: Optional time window in hours (e.g. 24).
+        limit: Optional maximum number of records to retrieve.
+    """
+    if days or hours:
+        records = await client.get_history_range(
+            accessory_id=accessory_id,
+            service_id=service_id,
+            characteristic_id=characteristic_id,
+            days=days,
+            hours=hours,
+            max_records=limit or 10000,
+        )
+    else:
+        records = await client.get_history(
+            accessory_id=accessory_id,
+            service_id=service_id,
+            characteristic_id=characteristic_id,
+            limit=limit or 500,
+        )
+
+    num_values = []
+    for r in records:
+        v = _extract_val(r.get("value"))
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            num_values.append(float(v))
+
+    stats = {}
+    if num_values:
+        stats = {
+            "count": len(num_values),
+            "min": min(num_values),
+            "max": max(num_values),
+            "avg": sum(num_values) / len(num_values),
+            "latest": num_values[0],
+            "delta": max(num_values) - min(num_values),
+        }
+
+    return {
+        "accessory_id": accessory_id,
+        "service_id": service_id,
+        "characteristic_id": characteristic_id,
+        "records_count": len(records),
+        "stats": stats,
+        "history": records[:50] if len(records) > 50 else records,
+    }
+
+
+@app.tool()
+async def sprut_list_scenarios() -> List[Dict[str, Any]]:
+    """List all automation scenarios configured in SprutHub."""
+    scenarios = await client.list_scenarios()
+    return [
+        {
+            "index": s.get("index"),
+            "name": s.get("name"),
+            "active": s.get("active"),
+            "rooms": s.get("rooms", []),
+        }
+        for s in scenarios
+    ]
+
+
+@app.tool()
+async def sprut_run_scenario(index: str) -> str:
+    """Trigger / execute an automation scenario by index.
+    
+    Args:
+        index: The index of the scenario (from sprut_list_scenarios).
+    """
+    await client.run_scenario(index)
+    return f"Success: Scenario [index {index}] triggered."
+
+
+@app.tool()
+async def sprut_get_logs(count: int = 50, level: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Get recent system and driver logs from SprutHub.
+    
+    Args:
+        count: Number of log entries to retrieve (default 50).
+        level: Optional filter by log level (e.g. ERROR, WARN, INFO).
+    """
+    logs = await client.get_logs(count=count)
+    if level:
+        lvl = level.upper()
+        logs = [l for l in logs if lvl in (l.get("level") or "").upper()]
+    return logs
+
+
+@app.tool()
+async def sprut_list_extensions() -> List[Dict[str, Any]]:
+    """List installed protocols and extensions (Zigbee, BLE, HomeKit, MQTT, etc.) and their status."""
+    return await client.list_extensions()
+
+
+@app.tool()
+async def sprut_create_room(name: str) -> Dict[str, Any]:
+    """Create a new room in the smart home.
+    
+    Args:
+        name: Name for the new room.
+    """
+    return await client.create_room(name)
+
+
+@app.tool()
+async def sprut_update_room(room_id: int, name: Optional[str] = None) -> str:
+    """Update or rename an existing room.
+    
+    Args:
+        room_id: ID of the room to update.
+        name: Optional new name for the room.
+    """
+    await client.update_room(room_id=room_id, name=name)
+    return f"Success: Room ID {room_id} updated."
+
+
+@app.tool()
+async def sprut_delete_room(room_id: int) -> str:
+    """Delete a room from the smart home.
+    
+    Args:
+        room_id: ID of the room to delete.
+    """
+    await client.delete_room(room_id)
+    return f"Success: Room ID {room_id} deleted."
+
+
+@app.tool()
+async def sprut_list_catalog(search: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+    """List or search device templates in the SprutHub catalog.
+    
+    Args:
+        search: Optional query to search by model or manufacturer (e.g. Aubess, TS000F).
+        limit: Max number of templates to return.
+    """
+    return await client.list_catalog(search=search, limit=limit)
+
+
+@app.tool()
+async def sprut_get_catalog_template(
+    file_or_model: str,
+    store: Optional[str] = None,
+    controller: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Get full device template and definition from catalog.
+    
+    Args:
+        file_or_model: Template file path or model name.
+        store: Optional catalog store (default MAIN).
+        controller: Optional controller (e.g. zigbee).
+    """
+    if not store or not controller:
+        cats = await client.list_catalog(search=file_or_model, limit=10)
+        matched = None
+        for c in cats:
+            if (
+                c.get("file") == file_or_model
+                or file_or_model in c.get("file", "")
+                or file_or_model.lower() == (c.get("model") or "").lower()
+            ):
+                matched = c
+                break
+        if not matched and cats:
+            matched = cats[0]
+
+        if not matched:
+            raise ValueError(f"Catalog template '{file_or_model}' not found.")
+
+        store = matched.get("store", "MAIN")
+        controller = matched.get("controller", "zigbee")
+        file_or_model = matched.get("file")
+
+    return await client.get_catalog(store=store, controller=controller, file=file_or_model)
+
+
+@app.tool()
+async def sprut_restart_hub() -> str:
+    """Restart the SprutHub controller service."""
+    await client.restart_hub()
+    return "Success: SprutHub restart signal sent."
+
+
 def main():
     app.run(transport="stdio")
 

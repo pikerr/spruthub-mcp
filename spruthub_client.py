@@ -192,7 +192,153 @@ class SprutHubClient:
         }
         return await self.call("characteristic.update", payload)
 
+    async def get_history(
+        self,
+        accessory_id: int,
+        service_id: Optional[int] = None,
+        characteristic_id: Optional[int] = None,
+        after_timestamp: Optional[int] = None,
+        before_timestamp: Optional[int] = None,
+        after_id: Optional[int] = None,
+        limit: int = 500,
+    ) -> List[Dict[str, Any]]:
+        acc_filter: Dict[str, Any] = {"aId": accessory_id}
+        if service_id is not None:
+            acc_filter["sId"] = service_id
+        if characteristic_id is not None:
+            acc_filter["cId"] = characteristic_id
+
+        params: Dict[str, Any] = {
+            "filter": {"accessories": [acc_filter]},
+            "limit": limit,
+        }
+        if after_timestamp is not None:
+            params["afterTimestamp"] = after_timestamp
+        if before_timestamp is not None:
+            params["beforeTimestamp"] = before_timestamp
+        if after_id is not None:
+            params["afterId"] = after_id
+
+        res = await self.call("history.list", params)
+        return res.get("histories", [])
+
+    async def get_history_range(
+        self,
+        accessory_id: int,
+        service_id: Optional[int] = None,
+        characteristic_id: Optional[int] = None,
+        days: Optional[float] = None,
+        hours: Optional[float] = None,
+        max_records: int = 10000,
+    ) -> List[Dict[str, Any]]:
+        import time
+
+        cutoff_ms: Optional[int] = None
+        now_ms = int(time.time() * 1000)
+        if days is not None:
+            cutoff_ms = int(now_ms - days * 86400 * 1000)
+        elif hours is not None:
+            cutoff_ms = int(now_ms - hours * 3600 * 1000)
+
+        all_records = []
+        after_id = None
+        limit = 500
+
+        while len(all_records) < max_records:
+            cur_limit = min(limit, max_records - len(all_records))
+            records = await self.get_history(
+                accessory_id=accessory_id,
+                service_id=service_id,
+                characteristic_id=characteristic_id,
+                after_id=after_id,
+                limit=cur_limit,
+            )
+            if not records:
+                break
+
+            all_records.extend(records)
+            after_id = records[-1]["id"]
+
+            if cutoff_ms is not None:
+                oldest_ts = records[-1].get("timestamp", 0)
+                if oldest_ts < cutoff_ms:
+                    break
+
+            if len(records) < cur_limit:
+                break
+
+        if cutoff_ms is not None:
+            all_records = [r for r in all_records if r.get("timestamp", 0) >= cutoff_ms]
+
+        return all_records
+
+    async def list_scenarios(self) -> List[Dict[str, Any]]:
+        res = await self.call("scenario.list", {})
+        return res.get("scenarios", [])
+
+    async def run_scenario(self, index: str) -> Any:
+        return await self.call("scenario.run", {"index": str(index)})
+
+    async def get_logs(self, count: int = 50) -> List[Dict[str, Any]]:
+        res = await self.call("log.list", {"count": count})
+        return res.get("log", [])
+
+    async def list_extensions(self) -> List[Dict[str, Any]]:
+        res = await self.call("extension.list", {})
+        return res.get("extensions", [])
+
+    async def restart_hub(self) -> Any:
+        payload = {"serial": self.serial} if self.serial else {}
+        return await self.call("hub.restart", payload)
+
+    async def create_room(self, name: str) -> Dict[str, Any]:
+        return await self.call("room.create", {"name": name.strip()})
+
+    async def update_room(
+        self,
+        room_id: int,
+        name: Optional[str] = None,
+        visible: Optional[bool] = None,
+        order: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"id": room_id}
+        if name is not None:
+            payload["name"] = name.strip()
+        if visible is not None:
+            payload["visible"] = visible
+        if order is not None:
+            payload["order"] = order
+        return await self.call("room.update", payload)
+
+    async def delete_room(self, room_id: int) -> Dict[str, Any]:
+        return await self.call("room.delete", {"id": room_id})
+
+    async def list_catalog(
+        self,
+        search: Optional[str] = None,
+        limit: int = 50,
+        filter_params: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        payload: Dict[str, Any] = {"limit": limit}
+        if search:
+            payload["search"] = search.strip()
+        if filter_params:
+            payload["filter"] = filter_params
+        res = await self.call("catalog.list", payload)
+        return res.get("catalogs", [])
+
+    async def get_catalog(self, store: str, controller: str, file: str) -> Dict[str, Any]:
+        payload = {
+            "store": store,
+            "controller": controller,
+            "file": file,
+        }
+        res = await self.call("catalog.get", payload)
+        return res.get("catalog", res)
+
     async def close(self):
         if self._ws:
             await self._ws.close()
             self._ws = None
+
+

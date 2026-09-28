@@ -219,14 +219,496 @@ async def cmd_set(args: argparse.Namespace) -> None:
         await client.close()
 
 
+async def cmd_history(args: argparse.Namespace) -> None:
+    client = get_client()
+    try:
+        a_id = args.accessory_id
+        acc = await client.get_accessory(a_id)
+
+        # Build list of available characteristics
+        telemetry_chars = []
+        for s in acc.get("services", []):
+            sid = s.get("sId")
+            sname = s.get("name") or s.get("type", "")
+            for c in s.get("characteristics", []):
+                cid = c.get("cId")
+                ctl = c.get("control", {})
+                cname = ctl.get("name") or ctl.get("type", "")
+                ctype = ctl.get("type", "")
+                if ctype in (
+                    "Identify",
+                    "Name",
+                    "C_Online",
+                    "C_Room",
+                    "SerialNumber",
+                    "Manufacturer",
+                    "Model",
+                    "FirmwareRevision",
+                    "C_CatalogId",
+                ):
+                    continue
+                val = _extract_val(ctl.get("value"))
+                telemetry_chars.append({
+                    "sId": sid,
+                    "cId": cid,
+                    "sName": sname,
+                    "cName": cname,
+                    "type": ctype,
+                    "current": val,
+                })
+
+        target_sid = args.service
+        target_cid = None
+
+        if args.characteristic:
+            query = str(args.characteristic).strip().lower()
+            if "." in query and all(part.isdigit() for part in query.split(".", 1)):
+                parts = query.split(".", 1)
+                target_sid = int(parts[0])
+                target_cid = int(parts[1])
+            elif query.isdigit():
+                target_cid = int(query)
+            else:
+                matches = [
+                    tc
+                    for tc in telemetry_chars
+                    if query in tc["sName"].lower()
+                    or query in tc["cName"].lower()
+                    or query in tc["type"].lower()
+                ]
+                if len(matches) == 1:
+                    target_sid = matches[0]["sId"]
+                    target_cid = matches[0]["cId"]
+                elif len(matches) > 1:
+                    exact = [
+                        tc
+                        for tc in matches
+                        if query == tc["sName"].lower() or query == tc["cName"].lower()
+                    ]
+                    if len(exact) == 1:
+                        target_sid = exact[0]["sId"]
+                        target_cid = exact[0]["cId"]
+                    else:
+                        print(f"Ambiguous characteristic '{args.characteristic}'. Matches:", file=sys.stderr)
+                        for m in matches:
+                            print(
+                                f"  - {m['sName']} / {m['cName']} (sId={m['sId']}, cId={m['cId']})",
+                                file=sys.stderr,
+                            )
+                        sys.exit(1)
+                else:
+                    print(f"Error: Characteristic '{args.characteristic}' not found on accessory {a_id}.", file=sys.stderr)
+                    sys.exit(1)
+        else:
+            if len(telemetry_chars) == 1:
+                target_sid = telemetry_chars[0]["sId"]
+                target_cid = telemetry_chars[0]["cId"]
+            else:
+                acc_name = acc.get("name") or "Accessory"
+                print(f"Accessory {a_id} ({acc_name}) has {len(telemetry_chars)} measurable characteristics:")
+                for tc in telemetry_chars:
+                    curr_val = f" = {tc['current']}" if tc["current"] is not None else ""
+                    print(f"  - sId={tc['sId']:<2} cId={tc['cId']:<2} | {tc['sName']:<15} | {tc['cName']} ({tc['type']}){curr_val}")
+                print(f"\nSpecify characteristic by name or cId:\n  spruthub-cli history {a_id} <name_or_cId> [--days 7]")
+                return
+
+        # Fetch history
+        if args.days or args.hours:
+            records = await client.get_history_range(
+                accessory_id=a_id,
+                service_id=target_sid,
+                characteristic_id=target_cid,
+                days=args.days,
+                hours=args.hours,
+                max_records=args.limit or 10000,
+            )
+        else:
+            records = await client.get_history(
+                accessory_id=a_id,
+                service_id=target_sid,
+                characteristic_id=target_cid,
+                limit=args.limit or 500,
+            )
+
+        matched_info = next(
+            (tc for tc in telemetry_chars if tc["cId"] == target_cid and (target_sid is None or tc["sId"] == target_sid)),
+            {"sName": str(target_sid or ""), "cName": str(target_cid), "type": "Unknown", "current": None},
+        )
+
+        num_values = []
+        for r in records:
+            v = _extract_val(r.get("value"))
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                num_values.append(float(v))
+
+        stats = {}
+        if num_values:
+            stats = {
+                "count": len(num_values),
+                "min": min(num_values),
+                "max": max(num_values),
+                "avg": sum(num_values) / len(num_values),
+                "latest": num_values[0],
+                "delta": max(num_values) - min(num_values),
+            }
+
+        if args.json:
+            out = {
+                "accessory_id": a_id,
+                "service_id": target_sid,
+                "characteristic_id": target_cid,
+                "name": f"{matched_info['sName']} / {matched_info['cName']}",
+                "stats": stats,
+                "records_count": len(records),
+                "history": records,
+            }
+            print(json.dumps(out, indent=2, ensure_ascii=False))
+            return
+
+        from datetime import datetime
+        acc_name = acc.get("name") or f"ID {a_id}"
+        char_label = f"{matched_info['sName']} -> {matched_info['cName']}"
+        print(f"History: {acc_name} | {char_label} (sId={target_sid}, cId={target_cid})")
+        print(f"Total points: {len(records)}")
+
+        if not records:
+            print("No history records found for the requested period.")
+            return
+
+        first_ts = records[-1]["timestamp"] / 1000
+        last_ts = records[0]["timestamp"] / 1000
+        first_dt = datetime.fromtimestamp(first_ts).strftime("%Y-%m-%d %H:%M:%S")
+        last_dt = datetime.fromtimestamp(last_ts).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"Period: {first_dt} — {last_dt}")
+
+        if stats:
+            print(f"Stats: Min: {stats['min']:.4g} | Max: {stats['max']:.4g} | Avg: {stats['avg']:.4g} | Latest: {stats['latest']:.4g} | Delta: {stats['delta']:.4g}")
+
+        if (last_ts - first_ts) > 86400:
+            by_day = {}
+            for r in records:
+                dt_day = datetime.fromtimestamp(r["timestamp"] / 1000).strftime("%Y-%m-%d")
+                val = _extract_val(r.get("value"))
+                if isinstance(val, (int, float)) and not isinstance(val, bool):
+                    by_day.setdefault(dt_day, []).append(float(val))
+
+            print("\nDaily breakdown:")
+            for day in sorted(by_day.keys()):
+                vals = by_day[day]
+                print(f"  {day}: min={min(vals):.4g}, max={max(vals):.4g}, avg={sum(vals)/len(vals):.4g} (samples: {len(vals)})")
+        else:
+            print("\nRecent points (up to 15):")
+            for r in records[:15]:
+                dt_str = datetime.fromtimestamp(r["timestamp"] / 1000).strftime("%H:%M:%S")
+                val = _extract_val(r.get("value"))
+                print(f"  {dt_str} | {val}")
+    finally:
+        await client.close()
+
+
+async def cmd_scenarios(args: argparse.Namespace) -> None:
+    client = get_client()
+    try:
+        scenarios = await client.list_scenarios()
+        if args.search:
+            q = args.search.lower()
+            scenarios = [s for s in scenarios if q in (s.get("name") or "").lower()]
+
+        if args.json:
+            print(json.dumps(scenarios, indent=2, ensure_ascii=False))
+            return
+
+        print(f"Scenarios ({len(scenarios)}):")
+        for s in scenarios:
+            idx = s.get("index")
+            name = s.get("name") or "Unnamed"
+            status = "ACTIVE" if s.get("active") else "DISABLED"
+            rooms = s.get("rooms", [])
+            rooms_str = f" [Rooms: {rooms}]" if rooms else ""
+            print(f"  [{idx:>3}] {name:<35} | {status}{rooms_str}")
+    finally:
+        await client.close()
+
+
+async def cmd_scenario_run(args: argparse.Namespace) -> None:
+    client = get_client()
+    try:
+        scenarios = await client.list_scenarios()
+        target_index = None
+        target_name = None
+
+        query = str(args.scenario).strip()
+        for s in scenarios:
+            if str(s.get("index")) == query:
+                target_index = s.get("index")
+                target_name = s.get("name")
+                break
+            if query.lower() == (s.get("name") or "").lower():
+                target_index = s.get("index")
+                target_name = s.get("name")
+                break
+
+        if not target_index:
+            matches = [s for s in scenarios if query.lower() in (s.get("name") or "").lower()]
+            if len(matches) == 1:
+                target_index = matches[0].get("index")
+                target_name = matches[0].get("name")
+            elif len(matches) > 1:
+                print(f"Ambiguous scenario name '{query}'. Matches:", file=sys.stderr)
+                for m in matches:
+                    print(f"  [{m.get('index')}] {m.get('name')}", file=sys.stderr)
+                sys.exit(1)
+            else:
+                print(f"Error: Scenario '{query}' not found.", file=sys.stderr)
+                sys.exit(1)
+
+        await client.run_scenario(target_index)
+        print(f"Success: Scenario '{target_name}' [index {target_index}] executed.")
+    finally:
+        await client.close()
+
+
+async def cmd_logs(args: argparse.Namespace) -> None:
+    client = get_client()
+    try:
+        from datetime import datetime
+
+        logs = await client.get_logs(count=args.count or 50)
+        if args.level:
+            lvl = args.level.upper()
+            logs = [l for l in logs if lvl in (l.get("level") or "").upper()]
+        if args.search:
+            q = args.search.lower()
+            logs = [
+                l
+                for l in logs
+                if q in (l.get("message") or "").lower() or q in (l.get("path") or "").lower()
+            ]
+
+        if args.json:
+            print(json.dumps(logs, indent=2, ensure_ascii=False))
+            return
+
+        print(f"SprutHub Logs ({len(logs)}):")
+        for l in logs:
+            ts_ms = l.get("time", 0)
+            dt_str = (
+                datetime.fromtimestamp(ts_ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
+                if ts_ms
+                else "Unknown"
+            )
+            lvl = (l.get("level") or "").replace("LOG_LEVEL_", "")
+            path = l.get("path") or ""
+            msg = l.get("message") or ""
+            print(f"[{dt_str}] [{lvl:<5}] [{path}]: {msg}")
+    finally:
+        await client.close()
+
+
+async def cmd_extensions(args: argparse.Namespace) -> None:
+    client = get_client()
+    try:
+        exts = await client.list_extensions()
+        if args.json:
+            print(json.dumps(exts, indent=2, ensure_ascii=False))
+            return
+
+        print(f"Extensions / Protocols ({len(exts)}):")
+        for e in exts:
+            e_id = e.get("id")
+            name = e.get("name") or "Unnamed"
+            etype = e.get("type") or ""
+            online = "ONLINE" if e.get("online", True) else "OFFLINE"
+            enabled = "ENABLED" if e.get("enabled", True) else "DISABLED"
+            print(f"  ID {e_id:<2} | {name:<20} | Type: {etype:<12} | {enabled} | {online}")
+    finally:
+        await client.close()
+
+
+async def cmd_restart(args: argparse.Namespace) -> None:
+    if not args.yes:
+        confirm = input("Are you sure you want to restart SprutHub? [y/N]: ").strip().lower()
+        if confirm not in ("y", "yes"):
+            print("Restart aborted.")
+            return
+
+    client = get_client()
+    try:
+        await client.restart_hub()
+        print("Success: Restart signal sent to SprutHub controller.")
+    finally:
+        await client.close()
+
+
+async def cmd_room_create(args: argparse.Namespace) -> None:
+    name = args.name.strip()
+    if not name:
+        print("Error: Room name cannot be empty.", file=sys.stderr)
+        sys.exit(1)
+
+    client = get_client()
+    try:
+        res = await client.create_room(name)
+        new_id = res.get("id")
+        print(f"Success: Room '{name}' created with ID {new_id}.")
+    finally:
+        await client.close()
+
+
+async def cmd_room_rename(args: argparse.Namespace) -> None:
+    target = str(args.room).strip()
+    new_name = args.new_name.strip()
+    if not new_name:
+        print("Error: New room name cannot be empty.", file=sys.stderr)
+        sys.exit(1)
+
+    client = get_client()
+    try:
+        rooms = await client.list_rooms()
+        room_id = None
+        current_name = None
+
+        if target.isdigit():
+            r_id = int(target)
+            for r in rooms:
+                if r.get("id") == r_id:
+                    room_id = r_id
+                    current_name = r.get("name")
+                    break
+        if room_id is None:
+            for r in rooms:
+                if r.get("name", "").lower() == target.lower():
+                    room_id = r.get("id")
+                    current_name = r.get("name")
+                    break
+
+        if room_id is None:
+            print(f"Error: Room '{target}' not found.", file=sys.stderr)
+            sys.exit(1)
+
+        await client.update_room(room_id=room_id, name=new_name)
+        print(f"Success: Room ID {room_id} ('{current_name}') renamed to '{new_name}'.")
+    finally:
+        await client.close()
+
+
+async def cmd_room_delete(args: argparse.Namespace) -> None:
+    target = str(args.room).strip()
+    client = get_client()
+    try:
+        rooms = await client.list_rooms()
+        room_id = None
+        room_name = None
+
+        if target.isdigit():
+            r_id = int(target)
+            for r in rooms:
+                if r.get("id") == r_id:
+                    room_id = r_id
+                    room_name = r.get("name")
+                    break
+        if room_id is None:
+            for r in rooms:
+                if r.get("name", "").lower() == target.lower():
+                    room_id = r.get("id")
+                    room_name = r.get("name")
+                    break
+
+        if room_id is None:
+            print(f"Error: Room '{target}' not found.", file=sys.stderr)
+            sys.exit(1)
+
+        if not args.yes:
+            confirm = (
+                input(f"Are you sure you want to delete room '{room_name}' (ID {room_id})? [y/N]: ")
+                .strip()
+                .lower()
+            )
+            if confirm not in ("y", "yes"):
+                print("Deletion aborted.")
+                return
+
+        await client.delete_room(room_id)
+        print(f"Success: Room '{room_name}' (ID {room_id}) deleted.")
+    finally:
+        await client.close()
+
+
+async def cmd_catalog_list(args: argparse.Namespace) -> None:
+    client = get_client()
+    try:
+        cats = await client.list_catalog(search=args.search, limit=args.limit or 50)
+        if args.json:
+            print(json.dumps(cats, indent=2, ensure_ascii=False))
+            return
+
+        print(f"Catalog Templates ({len(cats)}):")
+        for c in cats:
+            m = c.get("model") or "-"
+            man = c.get("manufacturer") or "-"
+            ctl = c.get("controller") or "-"
+            f = c.get("file") or "-"
+            s = c.get("store") or "MAIN"
+            print(f"  [{ctl:<6}] {man:<15} | Model: {m:<15} | File: {f} ({s})")
+    finally:
+        await client.close()
+
+
+async def cmd_catalog_get(args: argparse.Namespace) -> None:
+    client = get_client()
+    try:
+        store = args.store
+        controller = args.controller
+        file_path = args.file
+
+        if not store or not controller:
+            cats = await client.list_catalog(search=file_path, limit=10)
+            matched = None
+            for c in cats:
+                if (
+                    c.get("file") == file_path
+                    or file_path in c.get("file", "")
+                    or file_path.lower() == (c.get("model") or "").lower()
+                ):
+                    matched = c
+                    break
+            if not matched and cats:
+                matched = cats[0]
+
+            if not matched:
+                print(f"Error: Catalog template '{file_path}' not found.", file=sys.stderr)
+                sys.exit(1)
+
+            store = matched.get("store", "MAIN")
+            controller = matched.get("controller", "zigbee")
+            file_path = matched.get("file")
+
+        cat_details = await client.get_catalog(store=store, controller=controller, file=file_path)
+        if args.json:
+            print(json.dumps(cat_details, indent=2, ensure_ascii=False))
+            return
+
+        tmpl = cat_details.get("template")
+        if tmpl and isinstance(tmpl, str):
+            try:
+                parsed = json.loads(tmpl)
+                print(json.dumps(parsed, indent=2, ensure_ascii=False))
+                return
+            except Exception:
+                pass
+        print(json.dumps(cat_details, indent=2, ensure_ascii=False))
+    finally:
+        await client.close()
+
+
 SKILL_MARKDOWN = """---
 name: spruthub
-description: Control and monitor SprutHub smart home (lights, switches, rooms, sensors, temperature) on-demand via lightweight CLI without background daemon overhead.
+description: Control and monitor SprutHub smart home (lights, switches, rooms, sensors, temperature, history, scenarios, logs, catalog) on-demand via lightweight CLI without background daemon overhead.
 ---
 
 # SprutHub Smart Home Skill
 
-Use this skill whenever the user asks to inspect, monitor, or control devices in their **SprutHub** smart home (e.g. "включи свет в спальне", "какая температура в кабинете", "список комнат", "выключи розетку").
+Use this skill whenever the user asks to inspect, monitor, or control devices in their **SprutHub** smart home (e.g. "включи свет в спальне", "какая температура в кабинете", "история разницы напряжений за неделю", "запусти сценарий вечер", "создай комнату", "покажи логи").
 
 ## Execution Mode
 
@@ -245,6 +727,12 @@ uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli <command> [ar
   `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli info`
 * **List all rooms (with sensor readings):**
   `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli rooms`
+* **Create room:**
+  `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli room create <name>`
+* **Rename room:**
+  `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli room rename <id_or_name> <new_name>`
+* **Delete room:**
+  `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli room delete <id_or_name> --yes`
 
 ### 2. Finding & Inspecting Devices
 * **List controllable devices in a specific room:**
@@ -254,20 +742,51 @@ uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli <command> [ar
 * **Inspect full device characteristics:**
   `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli device <accessory_id>`
 
-### 3. Controlling Switches, Lights & Outlets
+### 3. Historical Telemetry & Sensors
+* **List available characteristics for device:**
+  `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli history <accessory_id>`
+* **Get history for last 7 days:**
+  `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli history <accessory_id> <name_or_cId> --days 7`
+* **Get history for last 24 hours:**
+  `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli history <accessory_id> <name_or_cId> --hours 24`
+
+### 4. Scenarios & Automations
+* **List scenarios:**
+  `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli scenarios`
+* **Run scenario:**
+  `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli scenario run <name_or_index>`
+
+### 5. Diagnostics, Logs & Extensions
+* **View recent logs:**
+  `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli logs --count 50`
+* **Filter logs by error or keyword:**
+  `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli logs --level ERROR --search "zigbee"`
+* **List extensions and protocols:**
+  `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli extensions`
+* **Restart hub controller:**
+  `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli restart --yes`
+
+### 6. Templates & Device Catalog
+* **Search catalog templates:**
+  `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli catalog list --search "Aubess"`
+* **Inspect device template:**
+  `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli catalog get <model_or_file>`
+
+### 7. Controlling Switches, Lights & Outlets
 * **Turn ON:**
   `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli switch <accessory_id> on`
 * **Turn OFF:**
   `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli switch <accessory_id> off`
 
-### 4. Setting Characteristics (Brightness, Target Temp, Modes)
+### 8. Setting Characteristics (Brightness, Target Temp, Modes)
 * **Set specific value:**
   `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli set <accessory_id> <service_id> <characteristic_id> <value>`
 
 ## Guidelines for the Agent
 1. If the user asks about a room (e.g., "что включено в кабинете?"), run `spruthub-cli rooms` to get the `room_id`, then `spruthub-cli devices --room <id>` to see the exact state.
 2. If turning a switch on/off, use `spruthub-cli switch <id> on/off`. It automatically detects the correct Switch/Lightbulb/Outlet service without needing `sId` or `cId`.
-3. Provide a clear, concise confirmation to the user in Russian.
+3. Never delete user rooms or devices without explicit confirmation.
+4. Provide a clear, concise confirmation to the user in Russian.
 """
 
 
@@ -511,6 +1030,88 @@ def main() -> None:
     p_set.add_argument("characteristic_id", type=int, help="Characteristic ID (cId)")
     p_set.add_argument("value", help="Value to set")
     p_set.set_defaults(func=cmd_set)
+
+    # history
+    p_hist = subparsers.add_parser("history", help="Get historical sensor/telemetry data")
+    p_hist.add_argument("accessory_id", type=int, help="Accessory ID")
+    p_hist.add_argument(
+        "characteristic",
+        nargs="?",
+        default=None,
+        help="Characteristic name (e.g. DIFF, Temperature) or cId or sId.cId",
+    )
+    p_hist.add_argument("--service", "-s", type=int, default=None, help="Service ID (sId)")
+    p_hist.add_argument("--days", "-d", type=float, default=None, help="History window in days (e.g. 7)")
+    p_hist.add_argument("--hours", "-H", type=float, default=None, help="History window in hours (e.g. 24)")
+    p_hist.add_argument(
+        "--limit",
+        "-l",
+        type=int,
+        default=None,
+        help="Max records limit (default: 500 without range, 10000 with --days/--hours)",
+    )
+    p_hist.set_defaults(func=cmd_history)
+
+    # scenarios
+    p_scenarios = subparsers.add_parser("scenarios", help="List automation scenarios")
+    p_scenarios.add_argument("--search", "-s", type=str, default=None, help="Filter scenarios by name")
+    p_scenarios.set_defaults(func=cmd_scenarios)
+
+    # scenario
+    p_scenario = subparsers.add_parser("scenario", help="Control automation scenario")
+    sc_sub = p_scenario.add_subparsers(dest="scenario_action", required=True)
+    p_sc_run = sc_sub.add_parser("run", help="Run scenario by name or index")
+    p_sc_run.add_argument("scenario", help="Scenario index or name")
+    p_sc_run.set_defaults(func=cmd_scenario_run)
+
+    # logs
+    p_logs = subparsers.add_parser("logs", help="View recent hub logs and errors")
+    p_logs.add_argument("--count", "-n", type=int, default=50, help="Number of log entries (default 50)")
+    p_logs.add_argument("--level", help="Filter by level (e.g. ERROR, WARN, INFO)")
+    p_logs.add_argument("--search", "-s", help="Filter logs by message or path")
+    p_logs.set_defaults(func=cmd_logs)
+
+    # extensions
+    p_exts = subparsers.add_parser("extensions", help="List installed protocols and extensions (Zigbee, BLE, etc.)")
+    p_exts.set_defaults(func=cmd_extensions)
+
+    # restart
+    p_restart = subparsers.add_parser("restart", help="Restart SprutHub controller")
+    p_restart.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
+    p_restart.set_defaults(func=cmd_restart)
+
+    # room
+    p_room = subparsers.add_parser("room", help="Manage rooms (create, rename, delete)")
+    room_sub = p_room.add_subparsers(dest="room_action", required=True)
+
+    p_r_create = room_sub.add_parser("create", help="Create a new room")
+    p_r_create.add_argument("name", help="Room name")
+    p_r_create.set_defaults(func=cmd_room_create)
+
+    p_r_rename = room_sub.add_parser("rename", help="Rename an existing room")
+    p_r_rename.add_argument("room", help="Room ID or current name")
+    p_r_rename.add_argument("new_name", help="New room name")
+    p_r_rename.set_defaults(func=cmd_room_rename)
+
+    p_r_delete = room_sub.add_parser("delete", help="Delete a room")
+    p_r_delete.add_argument("room", help="Room ID or name to delete")
+    p_r_delete.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
+    p_r_delete.set_defaults(func=cmd_room_delete)
+
+    # catalog
+    p_cat = subparsers.add_parser("catalog", help="Inspect device templates and catalog")
+    cat_sub = p_cat.add_subparsers(dest="catalog_action", required=True)
+
+    p_cat_list = cat_sub.add_parser("list", help="List device templates in catalog")
+    p_cat_list.add_argument("--search", "-s", help="Search by model or manufacturer (e.g. Aubess)")
+    p_cat_list.add_argument("--limit", "-l", type=int, default=50, help="Max results (default 50)")
+    p_cat_list.set_defaults(func=cmd_catalog_list)
+
+    p_cat_get = cat_sub.add_parser("get", help="Get device template details")
+    p_cat_get.add_argument("file", help="Template file path or model name")
+    p_cat_get.add_argument("--store", default=None, help="Catalog store (e.g. MAIN)")
+    p_cat_get.add_argument("--controller", default=None, help="Controller type (e.g. zigbee)")
+    p_cat_get.set_defaults(func=cmd_catalog_get)
 
     args = parser.parse_args()
     asyncio.run(args.func(args))
