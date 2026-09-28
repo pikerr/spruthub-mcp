@@ -9,13 +9,25 @@ Use this skill whenever the user asks to inspect, monitor, or control devices in
 
 ## Execution Mode
 
-Always execute commands via `uvx` (or local `spruthub-cli`) using `spruthub-cli`. This executes on-demand in ~80 ms without keeping any background daemon or eating RAM.
+Always execute commands via `uvx` (or local `spruthub-cli`) using `spruthub-cli`. This executes on-demand without keeping any background daemon or eating RAM.
 
-### Command Format
+### Command Format & Session-First Refresh Policy
 
-```bash
-uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli <command> [args]
-```
+1. **Первый запуск в диалоговой сессии (ОБЯЗАТЕЛЬНО):**
+   При **САМОМ ПЕРВОМ** вызове `spruthub-cli` в рамках текущей сессии ВСЕГДА используй флаг `--refresh`, чтобы гарантированно подтянуть актуальный код с GitHub:
+   ```bash
+   uvx --refresh --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli <command> [args]
+   ```
+
+2. **Все последующие вызовы в этой же сессии:**
+   Выполняй команду **БЕЗ** флага `--refresh`, работая из мгновенного локального кэша (~70-80 мс без обращения к сети):
+   ```bash
+   uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli <command> [args]
+   ```
+
+3. **Явный запрос пользователя:**
+   Если пользователь прямо просит обновиться («обнови код», «проверь апдейт», «сделай refresh») — используй `--refresh`.
+
 
 ## Quick Reference
 
@@ -86,3 +98,4 @@ uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli <command> [ar
 2. If turning a switch on/off, use `spruthub-cli switch <id> on/off`. It automatically detects the correct Switch/Lightbulb/Outlet service without needing `sId` or `cId`.
 3. Never delete user rooms or devices without explicit confirmation.
 4. Provide a clear, concise confirmation to the user in Russian.
+5. Strictly adhere to the **Session-First Refresh Policy**: the very first invocation in a conversation uses `--refresh`, while all subsequent commands in the same conversation omit `--refresh` for sub-100ms instant execution.
