@@ -20,6 +20,8 @@ uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli <command> [ar
 ## Quick Reference
 
 ### 1. Hub Status & Rooms
+* **Comprehensive summary dashboard:**
+  `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli summary`
 * **Hub info:**
   `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli info`
 * **List all rooms (with sensor readings):**

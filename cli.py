@@ -60,6 +60,166 @@ async def cmd_info(args: argparse.Namespace) -> None:
         await client.close()
 
 
+async def cmd_summary(args: argparse.Namespace) -> None:
+    client = get_client()
+    try:
+        hub_info, account, rooms, accessories, scenarios, extensions = await asyncio.gather(
+            client.get_hub_info(),
+            client.call("account.get", {}),
+            client.list_rooms(),
+            client.list_accessories(),
+            client.list_scenarios(),
+            client.list_extensions(),
+        )
+
+        ver = hub_info.get("version", {}).get("current", {})
+        plat = hub_info.get("platform", {})
+        owner = hub_info.get("owner") or account.get("email") or "Не указан"
+
+        online_accs = sum(1 for a in accessories if a.get("online", True))
+        offline_accs = len(accessories) - online_accs
+        active_scenarios = sum(1 for s in scenarios if s.get("active"))
+
+        controllable_count = 0
+        turned_on_count = 0
+        for a in accessories:
+            has_switch = False
+            is_on = False
+            for s in a.get("services", []):
+                if s.get("type") in ("Switch", "Lightbulb", "Outlet"):
+                    has_switch = True
+                    for c in s.get("characteristics", []):
+                        ctl = c.get("control", {})
+                        if ctl.get("type") == "On" or "boolValue" in ctl.get("value", {}):
+                            if ctl.get("value", {}).get("boolValue") is True:
+                                is_on = True
+            if has_switch:
+                controllable_count += 1
+                if is_on:
+                    turned_on_count += 1
+
+        room_map = {r["id"]: {"room": r, "devices": [], "on_count": 0, "offline_count": 0} for r in rooms}
+        unassigned = []
+
+        for a in accessories:
+            rid = a.get("roomId") or a.get("room")
+            is_on = False
+            for s in a.get("services", []):
+                if s.get("type") in ("Switch", "Lightbulb", "Outlet"):
+                    for c in s.get("characteristics", []):
+                        if c.get("control", {}).get("value", {}).get("boolValue") is True:
+                            is_on = True
+
+            if rid in room_map:
+                room_map[rid]["devices"].append(a)
+                if is_on:
+                    room_map[rid]["on_count"] += 1
+                if a.get("online") is False:
+                    room_map[rid]["offline_count"] += 1
+            else:
+                unassigned.append(a)
+
+        if args.json:
+            out = {
+                "hub": {
+                    "name": hub_info.get("name"),
+                    "model": hub_info.get("model"),
+                    "serial": hub_info.get("serial"),
+                    "owner": owner,
+                    "online": hub_info.get("online"),
+                    "version": ver.get("version"),
+                    "revision": ver.get("revision"),
+                    "platform": f"{plat.get('manufacturer', '')} {plat.get('model', '')}".strip(),
+                },
+                "stats": {
+                    "rooms_total": len(rooms),
+                    "accessories_total": len(accessories),
+                    "accessories_online": online_accs,
+                    "accessories_offline": offline_accs,
+                    "controllable_total": controllable_count,
+                    "turned_on_now": turned_on_count,
+                    "scenarios_total": len(scenarios),
+                    "scenarios_active": active_scenarios,
+                    "extensions_total": len(extensions),
+                },
+                "rooms": [
+                    {
+                        "id": rid,
+                        "name": rdata["room"].get("name"),
+                        "devices_count": len(rdata["devices"]),
+                        "turned_on": rdata["on_count"],
+                        "offline": rdata["offline_count"],
+                        "sensors": [s.get("label") for s in rdata["room"].get("sensors", []) if s.get("label")],
+                    }
+                    for rid, rdata in sorted(room_map.items())
+                ],
+                "extensions": extensions,
+            }
+            print(json.dumps(out, indent=2, ensure_ascii=False))
+            return
+
+        print("================================================================================")
+        print("                      СПРУТХАБ: СВОДНЫЙ ОТЧЕТ (SUMMARY)                         ")
+        print("================================================================================")
+        print(f"Контроллер: {hub_info.get('name')} (Sprut.hub {hub_info.get('model')}) | Владелец: {owner}")
+        print(f"Серийный №: {hub_info.get('serial')} | Платформа: {plat.get('manufacturer')} {plat.get('model')} (MAC: {plat.get('mac')})")
+        print(f"Версия ПО:  v{ver.get('version')} (rev {ver.get('revision')}, template {ver.get('template')}, ветка {hub_info.get('version', {}).get('branch')}) | Java: JDK {plat.get('jdk')}")
+        print(f"Статус:     {'🟢 ОНЛАЙН' if hub_info.get('online') else '🔴 ОФЛАЙН'} | Язык: {hub_info.get('lang')}")
+        print("--------------------------------------------------------------------------------")
+        print("ОБЩАЯ СТАТИСТИКА:")
+        print(f"  • Комнат:         {len(rooms)}")
+        print(f"  • Аксессуаров:    {len(accessories)} (онлайн: {online_accs}, офлайн: {offline_accs})")
+        print(f"  • Управляемых:    {controllable_count} (включено прямо сейчас: {turned_on_count})")
+        print(f"  • Сценариев:      {len(scenarios)} (активных: {active_scenarios}, выключенных: {len(scenarios) - active_scenarios})")
+        print(f"  • Расширений:     {len(extensions)} (контроллеры, мосты, уведомления)")
+        print("--------------------------------------------------------------------------------")
+        print("КОНТРОЛЛЕРЫ И РАСШИРЕНИЯ:")
+        by_type: dict[str, list[dict[str, Any]]] = {}
+        for e in extensions:
+            btype = e.get("bundleType") or "OTHER"
+            by_type.setdefault(btype, []).append(e)
+
+        type_labels = {
+            "CONTROLLER": "Протокольные контроллеры",
+            "BRIDGE": "Мосты интеграций",
+            "NOTIFICATION": "Службы уведомлений",
+            "PLUGIN": "Плагины и сервисы",
+        }
+        for btype, elist in by_type.items():
+            print(f"  [{type_labels.get(btype, btype)}]")
+            for e in elist:
+                status_icon = "🟢" if e.get("state") == "LOADED" else ("⚪" if not e.get("enabled") else "🔴")
+                child_str = f"{e.get('childCount', 0)} устройств" if "childCount" in e else ""
+                version_str = ""
+                for sp in e.get("spaces", []):
+                    h = sp.get("label", {}).get("header", "")
+                    if "v" in h:
+                        version_str = h.split()[-1]
+                        break
+                ver_disp = f"({version_str})" if version_str else ""
+                print(f"    {status_icon} {e.get('name'):<20} | Тип: {e.get('type'):<10} {ver_disp:<10} | {e.get('state'):<10} | {child_str}")
+        print("--------------------------------------------------------------------------------")
+        print("КОМНАТЫ И РАСПРЕДЕЛЕНИЕ УСТРОЙСТВ:")
+        print(f"  {'ID':<4} | {'Комната':<20} | {'Устройств':<10} | {'Вкл':<5} | {'Офлайн':<7} | Сенсоры")
+        print("  " + "-" * 76)
+        for rid, rdata in sorted(room_map.items()):
+            r = rdata["room"]
+            dev_count = len(rdata["devices"])
+            on_cnt = rdata["on_count"]
+            off_cnt = rdata["offline_count"]
+            sensors = [s.get("label") for s in r.get("sensors", []) if s.get("label")]
+            sensors_str = ", ".join(sensors[:3]) if sensors else "-"
+            if len(sensors) > 3:
+                sensors_str += f" (+{len(sensors)-3})"
+            print(f"  {rid:<4} | {r.get('name'):<20} | {dev_count:<10} | {on_cnt:<5} | {off_cnt:<7} | {sensors_str}")
+
+        if unassigned:
+            print(f"  --   | Без комнаты          | {len(unassigned):<10} | -     | -       | -")
+        print("================================================================================")
+    finally:
+        await client.close()
+
+
 async def cmd_rooms(args: argparse.Namespace) -> None:
     client = get_client()
     try:
@@ -723,6 +883,8 @@ uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli <command> [ar
 ## Quick Reference
 
 ### 1. Hub Status & Rooms
+* **Comprehensive summary dashboard:**
+  `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli summary`
 * **Hub info:**
   `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli info`
 * **List all rooms (with sensor readings):**
@@ -1000,6 +1162,11 @@ def main() -> None:
     # info
     p_info = subparsers.add_parser("info", help="Get SprutHub info")
     p_info.set_defaults(func=cmd_info)
+
+    # summary
+    p_summary = subparsers.add_parser("summary", help="Get comprehensive smart home dashboard summary")
+    p_summary.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    p_summary.set_defaults(func=cmd_summary)
 
     # rooms
     p_rooms = subparsers.add_parser("rooms", help="List rooms")

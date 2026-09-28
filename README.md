@@ -58,7 +58,8 @@ flowchart TD
 
 | Категория | Команда CLI | MCP Tool | Описание |
 |---|---|---|---|
-| **Хаб и система** | `spruthub-cli info` | `sprut_get_hub_info` | Информация о контроллере (имя, модель, серийник, версия ПО, онлайн-статус). |
+| **Хаб и система** | `spruthub-cli summary` | `sprut_get_summary` | Комплексная сводка: статус хаба, аккаунт, комнаты с устройствами, расширения, статистика. |
+| | `spruthub-cli info` | `sprut_get_hub_info` | Краткая информация о контроллере (имя, модель, серийник, версия ПО, онлайн-статус). |
 | | `spruthub-cli restart [--yes]` | `sprut_restart_hub` | Перезагрузка контроллера / службы SprutHub. |
 | **Комнаты** | `spruthub-cli rooms` | `sprut_list_rooms` | Список комнат со сводкой датчиков в реальном времени. |
 | | `spruthub-cli room create <name>` | `sprut_create_room` | Создание новой комнаты. |

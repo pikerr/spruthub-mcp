@@ -406,6 +406,110 @@ async def sprut_restart_hub() -> str:
     return "Success: SprutHub restart signal sent."
 
 
+@app.tool()
+async def sprut_get_summary() -> Dict[str, Any]:
+    """Get a comprehensive smart home dashboard summary (hub info, users, room counts, device breakdown, extensions, scenarios)."""
+    import asyncio
+    hub_info, account, rooms, accessories, scenarios, extensions = await asyncio.gather(
+        client.get_hub_info(),
+        client.call("account.get", {}),
+        client.list_rooms(),
+        client.list_accessories(),
+        client.list_scenarios(),
+        client.list_extensions(),
+    )
+
+    ver = hub_info.get("version", {}).get("current", {})
+    plat = hub_info.get("platform", {})
+    owner = hub_info.get("owner") or account.get("email") or "Не указан"
+
+    online_accs = sum(1 for a in accessories if a.get("online", True))
+    offline_accs = len(accessories) - online_accs
+    active_scenarios = sum(1 for s in scenarios if s.get("active"))
+
+    controllable_count = 0
+    turned_on_count = 0
+    for a in accessories:
+        has_switch = False
+        is_on = False
+        for s in a.get("services", []):
+            if s.get("type") in ("Switch", "Lightbulb", "Outlet"):
+                has_switch = True
+                for c in s.get("characteristics", []):
+                    ctl = c.get("control", {})
+                    if ctl.get("type") == "On" or "boolValue" in ctl.get("value", {}):
+                        if ctl.get("value", {}).get("boolValue") is True:
+                            is_on = True
+        if has_switch:
+            controllable_count += 1
+            if is_on:
+                turned_on_count += 1
+
+    room_map = {r["id"]: {"room": r, "devices_count": 0, "on_count": 0, "offline_count": 0} for r in rooms}
+    for a in accessories:
+        rid = a.get("roomId") or a.get("room")
+        is_on = False
+        for s in a.get("services", []):
+            if s.get("type") in ("Switch", "Lightbulb", "Outlet"):
+                for c in s.get("characteristics", []):
+                    if c.get("control", {}).get("value", {}).get("boolValue") is True:
+                        is_on = True
+
+        if rid in room_map:
+            room_map[rid]["devices_count"] += 1
+            if is_on:
+                room_map[rid]["on_count"] += 1
+            if a.get("online") is False:
+                room_map[rid]["offline_count"] += 1
+
+    return {
+        "hub": {
+            "name": hub_info.get("name"),
+            "model": hub_info.get("model"),
+            "serial": hub_info.get("serial"),
+            "owner": owner,
+            "online": hub_info.get("online"),
+            "version": ver.get("version"),
+            "revision": ver.get("revision"),
+            "platform": f"{plat.get('manufacturer', '')} {plat.get('model', '')}".strip(),
+        },
+        "stats": {
+            "rooms_total": len(rooms),
+            "accessories_total": len(accessories),
+            "accessories_online": online_accs,
+            "accessories_offline": offline_accs,
+            "controllable_total": controllable_count,
+            "turned_on_now": turned_on_count,
+            "scenarios_total": len(scenarios),
+            "scenarios_active": active_scenarios,
+            "extensions_total": len(extensions),
+        },
+        "rooms": [
+            {
+                "id": rid,
+                "name": rdata["room"].get("name"),
+                "devices_count": rdata["devices_count"],
+                "turned_on": rdata["on_count"],
+                "offline": rdata["offline_count"],
+                "sensors": [s.get("label") for s in rdata["room"].get("sensors", []) if s.get("label")],
+            }
+            for rid, rdata in sorted(room_map.items())
+        ],
+        "extensions": [
+            {
+                "id": e.get("id"),
+                "name": e.get("name"),
+                "type": e.get("type"),
+                "bundle_type": e.get("bundleType"),
+                "state": e.get("state"),
+                "enabled": e.get("enabled"),
+                "child_count": e.get("childCount", 0),
+            }
+            for e in extensions
+        ],
+    }
+
+
 def main():
     app.run(transport="stdio")
 
