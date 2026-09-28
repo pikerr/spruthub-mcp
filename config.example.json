@@ -1,4 +1,4 @@
 {
-  "ws_url": "ws://192.168.1.100/spruthub",
+  "host": "192.168.1.100",
   "token": "YOUR_LOCAL_PASSWORD_HERE"
 }

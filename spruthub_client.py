@@ -10,6 +10,31 @@ from pathlib import Path
 logger = logging.getLogger("spruthub")
 
 
+def normalize_ws_url(raw: str) -> str:
+    """Normalize a host, IP, or URL into a valid SprutHub WebSocket URL."""
+    raw = (raw or "").strip()
+    if not raw:
+        return "ws://127.0.0.1/spruthub"
+
+    if raw.startswith("ws://") or raw.startswith("wss://"):
+        if not raw.endswith("/spruthub"):
+            raw = raw.rstrip("/") + "/spruthub"
+        return raw
+
+    if raw.startswith("http://"):
+        raw = "ws://" + raw[7:]
+    elif raw.startswith("https://"):
+        raw = "wss://" + raw[8:]
+    else:
+        # Bare IP or hostname (e.g. 192.168.1.100 or spruthub.local)
+        raw = f"ws://{raw}"
+
+    if not raw.endswith("/spruthub"):
+        raw = raw.rstrip("/") + "/spruthub"
+
+    return raw
+
+
 def load_config() -> dict[str, Any]:
     """Load SprutHub configuration from env vars, XDG/AppData, or local config.json."""
     config: dict[str, Any] = {}
@@ -41,6 +66,10 @@ def load_config() -> dict[str, Any]:
             logger.debug(f"Failed to load {sys_cfg}: {e}")
 
     # 3. Environment variables have the highest priority
+    if os.environ.get("SPRUTHUB_HOST"):
+        config["host"] = os.environ["SPRUTHUB_HOST"]
+    if os.environ.get("SPRUTHUB_IP"):
+        config["host"] = os.environ["SPRUTHUB_IP"]
     if os.environ.get("SPRUTHUB_WS_URL"):
         config["ws_url"] = os.environ["SPRUTHUB_WS_URL"]
     if os.environ.get("SPRUTHUB_TOKEN"):
@@ -48,10 +77,12 @@ def load_config() -> dict[str, Any]:
     if os.environ.get("SPRUTHUB_SERIAL"):
         config["serial"] = os.environ["SPRUTHUB_SERIAL"]
 
-    if "ws_url" not in config:
-        config["ws_url"] = "ws://127.0.0.1/spruthub"
+    # Determine and normalize final ws_url
+    raw_host = config.get("host") or config.get("ip") or config.get("ws_url") or "127.0.0.1"
+    config["ws_url"] = normalize_ws_url(raw_host)
 
     return config
+
 
 class SprutHubClient:
     def __init__(self, ws_url: str, token: str, serial: Optional[str] = None):
