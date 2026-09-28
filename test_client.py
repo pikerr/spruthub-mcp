@@ -19,10 +19,10 @@ async def main():
 
     ws_url = os.environ.get("SPRUTHUB_WS_URL", config.get("ws_url", "ws://127.0.0.1/spruthub"))
     token = os.environ.get("SPRUTHUB_TOKEN", config.get("token", ""))
-    serial = os.environ.get("SPRUTHUB_SERIAL", config.get("serial", ""))
+    serial = os.environ.get("SPRUTHUB_SERIAL", config.get("serial", None))
 
-    if not token or not serial:
-        print("Error: SPRUTHUB_TOKEN and SPRUTHUB_SERIAL must be configured in config.json or environment variables.")
+    if not token:
+        print("Error: SPRUTHUB_TOKEN must be configured in config.json or environment variables.")
         sys.exit(1)
 
     client = SprutHubClient(

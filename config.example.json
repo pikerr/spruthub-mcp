@@ -1,5 +1,4 @@
 {
   "ws_url": "ws://192.168.1.100/spruthub",
-  "token": "YOUR_SESSION_TOKEN_HERE",
-  "serial": "YOUR_HUB_SERIAL_HERE"
+  "token": "YOUR_LOCAL_PASSWORD_HERE"
 }

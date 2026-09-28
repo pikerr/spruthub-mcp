@@ -32,10 +32,10 @@ if config_path.exists():
 
 WS_URL = os.environ.get("SPRUTHUB_WS_URL", config.get("ws_url", "ws://127.0.0.1/spruthub"))
 TOKEN = os.environ.get("SPRUTHUB_TOKEN", config.get("token", ""))
-SERIAL = os.environ.get("SPRUTHUB_SERIAL", config.get("serial", ""))
+SERIAL = os.environ.get("SPRUTHUB_SERIAL", config.get("serial", None))
 
-if not TOKEN or not SERIAL:
-    logger.warning("SPRUTHUB_TOKEN or SPRUTHUB_SERIAL is not set. Tools requiring hub communication will fail until configured.")
+if not TOKEN:
+    logger.warning("SPRUTHUB_TOKEN is not set. Tools requiring hub communication will fail until configured.")
 
 client = SprutHubClient(ws_url=WS_URL, token=TOKEN, serial=SERIAL)
 

@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger("spruthub")
 
 class SprutHubClient:
-    def __init__(self, ws_url: str, token: str, serial: str):
+    def __init__(self, ws_url: str, token: str, serial: Optional[str] = None):
         self.ws_url = ws_url
         self.token = token
         self.serial = serial
@@ -40,9 +40,10 @@ class SprutHubClient:
                 msg = {
                     "id": cur_id,
                     "token": self.token,
-                    "serial": self.serial,
                     "params": formatted_params
                 }
+                if self.serial:
+                    msg["serial"] = self.serial
                 
                 await self._ws.send(json.dumps(msg))
                 
@@ -63,7 +64,21 @@ class SprutHubClient:
                 raise RuntimeError(f"SprutHub connection lost: {e}") from e
 
     async def get_hub_info(self) -> Dict[str, Any]:
-        return await self.call("hub.get", {"serial": self.serial})
+        if self.serial:
+            try:
+                return await self.call("hub.get", {"serial": self.serial})
+            except Exception:
+                pass
+        
+        # Fallback to hub.list which does not require serial and works for any hub
+        res = await self.call("hub.list", {})
+        hubs = res.get("hubs", [])
+        if hubs:
+            hub = hubs[0]
+            if not self.serial and hub.get("serial"):
+                self.serial = hub["serial"]
+            return hub
+        return {}
 
     async def list_rooms(self) -> List[Dict[str, Any]]:
         res = await self.call("room.list", {})
