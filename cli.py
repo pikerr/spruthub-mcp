@@ -8,12 +8,32 @@ import os
 import sys
 from pathlib import Path
 from typing import Any
+import unicodedata
 
 # Add current folder to path
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 
 from spruthub_client import SprutHubClient, load_config, normalize_ws_url
+
+
+def _vis_len(s: Any) -> int:
+    w = 0
+    for ch in str(s):
+        if ch in ("🟢", "🔴", "⚪", "⚡") or unicodedata.east_asian_width(ch) in ("W", "F"):
+            w += 2
+        else:
+            w += 1
+    return w
+
+
+def _pad(s: Any, target_width: int, align: str = "left") -> str:
+    s_str = str(s) if s is not None else ""
+    vw = _vis_len(s_str)
+    sp = max(0, target_width - vw)
+    if align == "right":
+        return " " * sp + s_str
+    return s_str + " " * sp
 
 
 def _extract_val(val_dict: Any) -> Any:
@@ -238,11 +258,11 @@ async def cmd_summary(args: argparse.Namespace) -> None:
         print(f"  • Расширений:     {len(extensions)} (контроллеры, мосты, службы уведомлений)")
         print("------------------------------------------------------------------------------------------")
         print("УСТРОЙСТВА ПО КАТЕГОРИЯМ:")
-        print(f"  {'Категория':<42} | {'В сети':<8} | {'Из них вкл':<12} | {'Офлайн':<8} | {'Всего':<6}")
-        print("  " + "-" * 84)
+        print(f"  {_pad('Категория', 42)} | {_pad('🟢 В сети', 11)} | {_pad('⚡ Вкл', 8)} | {_pad('🔴 Офлайн', 11)} | {_pad('Всего', 6)}")
+        print("  " + "-" * 88)
         for c in cat_stats:
             on_disp = str(c["turned_on"]) if c["turned_on"] is not None else "-"
-            print(f"  {c['name']:<42} | {c['online']:<8} | {on_disp:<12} | {c['offline']:<8} | {c['total']:<6}")
+            print(f"  {_pad(c['name'], 42)} | {_pad(c['online'], 11)} | {_pad(on_disp, 8)} | {_pad(c['offline'], 11)} | {_pad(c['total'], 6)}")
         print("------------------------------------------------------------------------------------------")
         print("КОНТРОЛЛЕРЫ И РАСШИРЕНИЯ:")
         by_type: dict[str, list[dict[str, Any]]] = {}
@@ -271,8 +291,8 @@ async def cmd_summary(args: argparse.Namespace) -> None:
                 print(f"    {status_icon} {e.get('name'):<20} | Тип: {e.get('type'):<10} {ver_disp:<10} | {e.get('state'):<10} | {child_str}")
         print("------------------------------------------------------------------------------------------")
         print("КОМНАТЫ И РАСПРЕДЕЛЕНИЕ УСТРОЙСТВ:")
-        print(f"  {'ID':<4} | {'Комната':<20} | {'В сети':<8} | {'Из них вкл':<12} | {'Офлайн':<8} | {'Всего':<6} | Сенсоры")
-        print("  " + "-" * 88)
+        print(f"  {_pad('ID', 4)} | {_pad('Комната', 20)} | {_pad('🟢 В сети', 11)} | {_pad('⚡ Вкл', 8)} | {_pad('🔴 Офлайн', 11)} | {_pad('Всего', 6)} | Сенсоры")
+        print("  " + "-" * 92)
         for rid, rdata in sorted(room_map.items()):
             r = rdata["room"]
             dev_total = len(rdata["devices"])
@@ -283,11 +303,12 @@ async def cmd_summary(args: argparse.Namespace) -> None:
             sensors_str = ", ".join(sensors[:3]) if sensors else "-"
             if len(sensors) > 3:
                 sensors_str += f" (+{len(sensors)-3})"
-            print(f"  {rid:<4} | {r.get('name'):<20} | {onl_cnt:<8} | {on_cnt:<12} | {off_cnt:<8} | {dev_total:<6} | {sensors_str}")
+            print(f"  {_pad(rid, 4)} | {_pad(r.get('name'), 20)} | {_pad(onl_cnt, 11)} | {_pad(on_cnt, 8)} | {_pad(off_cnt, 11)} | {_pad(dev_total, 6)} | {sensors_str}")
 
         if unassigned:
             u_onl = sum(1 for a in unassigned if a.get("online", True))
-            print(f"  --   | Без комнаты          | {u_onl:<8} | -            | {len(unassigned)-u_onl:<8} | {len(unassigned):<6} | -")
+            u_off = len(unassigned) - u_onl
+            print(f"  {_pad('--', 4)} | {_pad('Без комнаты', 20)} | {_pad(u_onl, 11)} | {_pad('-', 8)} | {_pad(u_off, 11)} | {_pad(len(unassigned), 6)} | -")
         print("==========================================================================================")
     finally:
         await client.close()
