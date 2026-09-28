@@ -28,6 +28,30 @@
 2. **Семантический фасад (подход данного проекта):** сервер агрегирует рутинную логику внутри себя. Он очищает списки устройств от сервисных метаданных (`AccessoryInformation`, `Identify`, `C_Online`), распаковывает типизированные структуры и предоставляет компактные, понятные функции.  
    *Результат:* модель решает задачу пользователя **за один шаг**, не тратит лишние токены и работает стабильно даже на лёгких и быстрых моделях.
 
+## Архитектура: Двойной интерфейс (MCP + CLI)
+
+```mermaid
+flowchart TD
+    subgraph Clients["Клиенты и Ассистенты"]
+        Claude["Claude Desktop / Cursor<br/>(клиенты без терминала)"]
+        Terminal["Antigravity / Claude Code<br/>(терминальные агенты)"]
+    end
+
+    subgraph Package["Пакет spruthub-mcp"]
+        MCP["MCP Server (server.py)<br/>Stdio JSON-RPC daemon"]
+        CLI["CLI & Skill (cli.py)<br/>On-Demand (80ms, 0 RAM)"]
+        Core["SprutHubClient<br/>Семантический фасад & нормализация типов"]
+    end
+
+    Hub[("SprutHub Controller<br/>ws://IP/spruthub")]
+
+    Claude -->|MCP Protocol| MCP
+    Terminal -->|uvx / CLI| CLI
+    MCP --> Core
+    CLI --> Core
+    Core -->|Локальный WebSocket| Hub
+```
+
 ---
 
 ## Инструменты и команды
