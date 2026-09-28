@@ -104,8 +104,15 @@ uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli install --hos
 
 ### Режим 2: MCP Server (для Claude Desktop / Cursor)
 
-Добавьте в конфигурационный файл вашего MCP-клиента (например, `claude_desktop_config.json`):
+#### Автоматическая регистрация (Рекомендуется):
+Одной командой зарегистрирует сервер в Claude Desktop и/или Cursor (с сохранением резервной копии старого конфига):
+```bash
+uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli install-mcp --host 192.168.1.100 --token ВАШ_ПАРОЛЬ
+```
+*(Либо передайте флаг `--mcp` при первой установке: `spruthub-cli install --mcp`, и утилита настроит и Skill, и Claude Desktop сразу)*.
 
+#### Ручная настройка:
+Если вы предпочитаете прописать конфиг вручную в `claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {

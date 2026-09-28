@@ -331,6 +331,27 @@ async def cmd_install(args: argparse.Namespace) -> None:
     for target in installed_targets:
         print(f"✓ Installed Skill for {target}")
 
+    # Optional: Register MCP in Claude Desktop / Cursor
+    claude_cfg = get_claude_desktop_config_path()
+    cursor_cfg = get_cursor_mcp_config_path()
+    enable_mcp = getattr(args, "mcp", False)
+
+    if not enable_mcp and sys.stdin.isatty():
+        if claude_cfg.parent.exists() or cursor_cfg.parent.exists():
+            ans = input("\nDetected MCP client (Claude Desktop / Cursor). Register SprutHub MCP server? [Y/n]: ").strip().lower()
+            if ans in ("", "y", "yes", "д", "да"):
+                enable_mcp = True
+
+    if enable_mcp:
+        print("\nRegistering SprutHub MCP server in clients...")
+        reg_claude = register_mcp_server(claude_cfg, host, token, "Claude Desktop")
+        print(f"✓ Registered SprutHub MCP server in Claude Desktop ({reg_claude})")
+        print(f"  (Backup saved to {claude_cfg.name}.bak)")
+
+        if cursor_cfg.parent.exists():
+            reg_cursor = register_mcp_server(cursor_cfg, host, token, "Cursor")
+            print(f"✓ Registered SprutHub MCP server in Cursor ({reg_cursor})")
+
     # Verify connection
     print("\nVerifying connection to SprutHub...")
     client = SprutHubClient(ws_url=normalize_ws_url(host), token=token)
@@ -347,6 +368,94 @@ async def cmd_install(args: argparse.Namespace) -> None:
         await client.close()
 
 
+def get_claude_desktop_config_path() -> Path:
+    if os.name == "nt":
+        appdata = os.environ.get("APPDATA")
+        return Path(appdata) / "Claude" / "claude_desktop_config.json" if appdata else Path.home() / "AppData" / "Roaming" / "Claude" / "claude_desktop_config.json"
+    elif sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
+    else:
+        xdg_home = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
+        return Path(xdg_home) / "Claude" / "claude_desktop_config.json"
+
+
+def get_cursor_mcp_config_path() -> Path:
+    return Path.home() / ".cursor" / "mcp.json"
+
+
+def register_mcp_server(config_path: Path, host: str, token: str, client_name: str) -> str:
+    """Safely register SprutHub MCP server in a client configuration JSON with automatic backup."""
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    existing_data: dict[str, Any] = {}
+
+    if config_path.exists():
+        backup_path = config_path.with_suffix(".json.bak")
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                if content:
+                    existing_data = json.loads(content)
+            # Create backup
+            with open(backup_path, "w", encoding="utf-8") as f:
+                json.dump(existing_data, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            pass
+
+    if not isinstance(existing_data, dict):
+        existing_data = {}
+
+    if "mcpServers" not in existing_data or not isinstance(existing_data["mcpServers"], dict):
+        existing_data["mcpServers"] = {}
+
+    existing_data["mcpServers"]["spruthub"] = {
+        "command": "uvx",
+        "args": [
+            "--from",
+            "git+https://github.com/pikerr/spruthub-mcp",
+            "spruthub-mcp"
+        ],
+        "env": {
+            "SPRUTHUB_HOST": host,
+            "SPRUTHUB_TOKEN": token
+        }
+    }
+
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(existing_data, f, indent=2, ensure_ascii=False)
+
+    return str(config_path)
+
+
+async def cmd_install_mcp(args: argparse.Namespace) -> None:
+    config = load_config()
+    host = args.host or config.get("host") or config.get("ws_url")
+    token = args.token or config.get("token")
+
+    if not host or not token:
+        if not host:
+            host = input("SprutHub IP or host (e.g. 192.168.1.100): ").strip()
+        if not token:
+            token = input("SprutHub local password / token: ").strip()
+
+    if not host or not token:
+        print("Error: Both host and token are required.", file=sys.stderr)
+        sys.exit(1)
+
+    claude_cfg = get_claude_desktop_config_path()
+    cursor_cfg = get_cursor_mcp_config_path()
+
+    if args.client in ("claude", "all"):
+        reg = register_mcp_server(claude_cfg, host, token, "Claude Desktop")
+        print(f"✓ Registered SprutHub MCP server in Claude Desktop ({reg})")
+        print(f"  (Backup saved to {claude_cfg.name}.bak)")
+
+    if args.client in ("cursor", "all"):
+        reg = register_mcp_server(cursor_cfg, host, token, "Cursor")
+        print(f"✓ Registered SprutHub MCP server in Cursor ({reg})")
+
+    print("\nMCP configuration updated successfully! Please restart your MCP client (Claude Desktop / Cursor).")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="spruthub-cli",
@@ -359,7 +468,15 @@ def main() -> None:
     p_inst = subparsers.add_parser("install", help="Self-install SprutHub skill and configure credentials")
     p_inst.add_argument("--host", help="SprutHub IP or hostname (e.g. 192.168.1.100)")
     p_inst.add_argument("--token", help="SprutHub local password / token")
+    p_inst.add_argument("--mcp", action="store_true", help="Also register MCP server in Claude Desktop / Cursor")
     p_inst.set_defaults(func=cmd_install)
+
+    # install-mcp
+    p_mcp = subparsers.add_parser("install-mcp", help="Register SprutHub MCP server in Claude Desktop / Cursor")
+    p_mcp.add_argument("--host", help="SprutHub IP or hostname (e.g. 192.168.1.100)")
+    p_mcp.add_argument("--token", help="SprutHub local password / token")
+    p_mcp.add_argument("--client", choices=["claude", "cursor", "all"], default="all", help="Target client")
+    p_mcp.set_defaults(func=cmd_install_mcp)
 
     # info
     p_info = subparsers.add_parser("info", help="Get SprutHub info")
