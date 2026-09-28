@@ -80,42 +80,104 @@ async def cmd_summary(args: argparse.Namespace) -> None:
         offline_accs = len(accessories) - online_accs
         active_scenarios = sum(1 for s in scenarios if s.get("active"))
 
-        controllable_count = 0
-        turned_on_count = 0
-        for a in accessories:
-            has_switch = False
-            is_on = False
-            for s in a.get("services", []):
-                if s.get("type") in ("Switch", "Lightbulb", "Outlet"):
-                    has_switch = True
-                    for c in s.get("characteristics", []):
-                        ctl = c.get("control", {})
-                        if ctl.get("type") == "On" or "boolValue" in ctl.get("value", {}):
-                            if ctl.get("value", {}).get("boolValue") is True:
-                                is_on = True
-            if has_switch:
-                controllable_count += 1
-                if is_on:
-                    turned_on_count += 1
+        # Category definitions
+        cat_defs = [
+            ("Выключатели и силовые реле", lambda st, a: "Switch" in st, True),
+            ("Розетки", lambda st, a: "Outlet" in st, True),
+            ("Освещение", lambda st, a: "Lightbulb" in st, True),
+            ("Термостаты и климат", lambda st, a: "Thermostat" in st or "Fan" in st, True),
+            ("Шторы и электроприводы", lambda st, a: "WindowCovering" in st, False),
+            ("Датчики климата (T / H / P)", lambda st, a: any(t in st for t in ("TemperatureSensor", "HumiditySensor", "C_AtmosphericPressureSensor")), False),
+            ("Датчики движения и освещенности", lambda st, a: any(t in st for t in ("MotionSensor", "LightSensor", "OccupancySensor")), False),
+            ("Датчики открытия (двери / окна)", lambda st, a: any(t in st for t in ("ContactSensor", "DoorSensor")), False),
+            ("Датчики безопасности (дым / газ / протечка)", lambda st, a: any(t in st for t in ("LeakSensor", "SmokeSensor", "C_GasSensor")), False),
+            ("Беспроводные выключатели и кнопки", lambda st, a: "StatelessProgrammableSwitch" in st, False),
+            ("Сетевые ретрансляторы Zigbee", lambda st, a: "C_Repeater" in st, False),
+            ("Охранные системы", lambda st, a: "SecuritySystem" in st, False),
+            ("Системный контроллер", lambda st, a: a.get("id") == 1, False),
+        ]
 
-        room_map = {r["id"]: {"room": r, "devices": [], "on_count": 0, "offline_count": 0} for r in rooms}
+        cat_stats = []
+        assigned_ids = set()
+
+        for name, matcher, can_be_on in cat_defs:
+            total = 0
+            online = 0
+            offline = 0
+            turned_on = 0
+
+            for a in accessories:
+                aid = a.get("id")
+                if aid in assigned_ids:
+                    continue
+
+                stypes = {s.get("type") for s in a.get("services", [])}
+                if matcher(stypes, a):
+                    assigned_ids.add(aid)
+                    total += 1
+                    is_onl = a.get("online", True)
+                    if is_onl:
+                        online += 1
+                    else:
+                        offline += 1
+
+                    if can_be_on and is_onl:
+                        is_on = False
+                        for s in a.get("services", []):
+                            if s.get("type") in ("Switch", "Lightbulb", "Outlet", "Thermostat", "Fan"):
+                                for c in s.get("characteristics", []):
+                                    ctl = c.get("control", {})
+                                    if ctl.get("type") == "On" and ctl.get("value", {}).get("boolValue") is True:
+                                        is_on = True
+                        if is_on:
+                            turned_on += 1
+
+            if total > 0:
+                cat_stats.append({
+                    "name": name,
+                    "total": total,
+                    "online": online,
+                    "offline": offline,
+                    "turned_on": turned_on if can_be_on else None,
+                })
+
+        remaining = [a for a in accessories if a.get("id") not in assigned_ids]
+        if remaining:
+            r_online = sum(1 for a in remaining if a.get("online", True))
+            cat_stats.append({
+                "name": "Прочие устройства",
+                "total": len(remaining),
+                "online": r_online,
+                "offline": len(remaining) - r_online,
+                "turned_on": None,
+            })
+
+        controllable_count = sum(c["total"] for c in cat_stats if c["turned_on"] is not None)
+        turned_on_count = sum(c["turned_on"] for c in cat_stats if c["turned_on"] is not None)
+
+        room_map = {r["id"]: {"room": r, "devices": [], "online_count": 0, "offline_count": 0, "on_count": 0} for r in rooms}
         unassigned = []
 
         for a in accessories:
             rid = a.get("roomId") or a.get("room")
+            is_onl = a.get("online", True)
             is_on = False
-            for s in a.get("services", []):
-                if s.get("type") in ("Switch", "Lightbulb", "Outlet"):
-                    for c in s.get("characteristics", []):
-                        if c.get("control", {}).get("value", {}).get("boolValue") is True:
-                            is_on = True
+            if is_onl:
+                for s in a.get("services", []):
+                    if s.get("type") in ("Switch", "Lightbulb", "Outlet", "Thermostat", "Fan"):
+                        for c in s.get("characteristics", []):
+                            ctl = c.get("control", {})
+                            if ctl.get("type") == "On" and ctl.get("value", {}).get("boolValue") is True:
+                                is_on = True
 
             if rid in room_map:
                 room_map[rid]["devices"].append(a)
+                if is_onl:
+                    room_map[rid]["online_count"] += 1
+                else:
+                    room_map[rid]["offline_count"] += 1
                 if is_on:
                     room_map[rid]["on_count"] += 1
-                if a.get("online") is False:
-                    room_map[rid]["offline_count"] += 1
             else:
                 unassigned.append(a)
 
@@ -142,13 +204,15 @@ async def cmd_summary(args: argparse.Namespace) -> None:
                     "scenarios_active": active_scenarios,
                     "extensions_total": len(extensions),
                 },
+                "categories": cat_stats,
                 "rooms": [
                     {
                         "id": rid,
                         "name": rdata["room"].get("name"),
-                        "devices_count": len(rdata["devices"]),
+                        "online": rdata["online_count"],
                         "turned_on": rdata["on_count"],
                         "offline": rdata["offline_count"],
+                        "total": len(rdata["devices"]),
                         "sensors": [s.get("label") for s in rdata["room"].get("sensors", []) if s.get("label")],
                     }
                     for rid, rdata in sorted(room_map.items())
@@ -158,21 +222,28 @@ async def cmd_summary(args: argparse.Namespace) -> None:
             print(json.dumps(out, indent=2, ensure_ascii=False))
             return
 
-        print("================================================================================")
-        print("                      СПРУТХАБ: СВОДНЫЙ ОТЧЕТ (SUMMARY)                         ")
-        print("================================================================================")
+        print("==========================================================================================")
+        print("                            СПРУТХАБ: СВОДНЫЙ ОТЧЕТ (SUMMARY)                             ")
+        print("==========================================================================================")
         print(f"Контроллер: {hub_info.get('name')} (Sprut.hub {hub_info.get('model')}) | Владелец: {owner}")
         print(f"Серийный №: {hub_info.get('serial')} | Платформа: {plat.get('manufacturer')} {plat.get('model')} (MAC: {plat.get('mac')})")
         print(f"Версия ПО:  v{ver.get('version')} (rev {ver.get('revision')}, template {ver.get('template')}, ветка {hub_info.get('version', {}).get('branch')}) | Java: JDK {plat.get('jdk')}")
         print(f"Статус:     {'🟢 ОНЛАЙН' if hub_info.get('online') else '🔴 ОФЛАЙН'} | Язык: {hub_info.get('lang')}")
-        print("--------------------------------------------------------------------------------")
+        print("------------------------------------------------------------------------------------------")
         print("ОБЩАЯ СТАТИСТИКА:")
         print(f"  • Комнат:         {len(rooms)}")
-        print(f"  • Аксессуаров:    {len(accessories)} (онлайн: {online_accs}, офлайн: {offline_accs})")
+        print(f"  • Аксессуаров:    {len(accessories)} (в сети: {online_accs}, офлайн: {offline_accs})")
         print(f"  • Управляемых:    {controllable_count} (включено прямо сейчас: {turned_on_count})")
         print(f"  • Сценариев:      {len(scenarios)} (активных: {active_scenarios}, выключенных: {len(scenarios) - active_scenarios})")
-        print(f"  • Расширений:     {len(extensions)} (контроллеры, мосты, уведомления)")
-        print("--------------------------------------------------------------------------------")
+        print(f"  • Расширений:     {len(extensions)} (контроллеры, мосты, службы уведомлений)")
+        print("------------------------------------------------------------------------------------------")
+        print("УСТРОЙСТВА ПО КАТЕГОРИЯМ:")
+        print(f"  {'Категория':<42} | {'В сети':<8} | {'Из них вкл':<12} | {'Офлайн':<8} | {'Всего':<6}")
+        print("  " + "-" * 84)
+        for c in cat_stats:
+            on_disp = str(c["turned_on"]) if c["turned_on"] is not None else "-"
+            print(f"  {c['name']:<42} | {c['online']:<8} | {on_disp:<12} | {c['offline']:<8} | {c['total']:<6}")
+        print("------------------------------------------------------------------------------------------")
         print("КОНТРОЛЛЕРЫ И РАСШИРЕНИЯ:")
         by_type: dict[str, list[dict[str, Any]]] = {}
         for e in extensions:
@@ -198,24 +269,26 @@ async def cmd_summary(args: argparse.Namespace) -> None:
                         break
                 ver_disp = f"({version_str})" if version_str else ""
                 print(f"    {status_icon} {e.get('name'):<20} | Тип: {e.get('type'):<10} {ver_disp:<10} | {e.get('state'):<10} | {child_str}")
-        print("--------------------------------------------------------------------------------")
+        print("------------------------------------------------------------------------------------------")
         print("КОМНАТЫ И РАСПРЕДЕЛЕНИЕ УСТРОЙСТВ:")
-        print(f"  {'ID':<4} | {'Комната':<20} | {'Устройств':<10} | {'Вкл':<5} | {'Офлайн':<7} | Сенсоры")
-        print("  " + "-" * 76)
+        print(f"  {'ID':<4} | {'Комната':<20} | {'В сети':<8} | {'Из них вкл':<12} | {'Офлайн':<8} | {'Всего':<6} | Сенсоры")
+        print("  " + "-" * 88)
         for rid, rdata in sorted(room_map.items()):
             r = rdata["room"]
-            dev_count = len(rdata["devices"])
+            dev_total = len(rdata["devices"])
+            onl_cnt = rdata["online_count"]
             on_cnt = rdata["on_count"]
             off_cnt = rdata["offline_count"]
             sensors = [s.get("label") for s in r.get("sensors", []) if s.get("label")]
             sensors_str = ", ".join(sensors[:3]) if sensors else "-"
             if len(sensors) > 3:
                 sensors_str += f" (+{len(sensors)-3})"
-            print(f"  {rid:<4} | {r.get('name'):<20} | {dev_count:<10} | {on_cnt:<5} | {off_cnt:<7} | {sensors_str}")
+            print(f"  {rid:<4} | {r.get('name'):<20} | {onl_cnt:<8} | {on_cnt:<12} | {off_cnt:<8} | {dev_total:<6} | {sensors_str}")
 
         if unassigned:
-            print(f"  --   | Без комнаты          | {len(unassigned):<10} | -     | -       | -")
-        print("================================================================================")
+            u_onl = sum(1 for a in unassigned if a.get("online", True))
+            print(f"  --   | Без комнаты          | {u_onl:<8} | -            | {len(unassigned)-u_onl:<8} | {len(unassigned):<6} | -")
+        print("==========================================================================================")
     finally:
         await client.close()
 
