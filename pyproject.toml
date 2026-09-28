@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "spruthub-mcp"
+version = "0.1.0"
+description = "High-level semantic Model Context Protocol (MCP) server for SprutHub smart home"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    { name = "SprutHub Community" }
+]
+dependencies = [
+    "mcp>=1.0.0",
+    "websockets>=12.0",
+]
+
+[project.scripts]
+spruthub-mcp = "server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]

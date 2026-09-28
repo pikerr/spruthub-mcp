@@ -1,0 +1,1 @@
+{"name":"sprut_list_rooms","description":"List all rooms in the smart home with their IDs, names, and sensor summary.","parameters":{"properties":{},"title":"sprut_list_roomsArguments","type":"object"}}

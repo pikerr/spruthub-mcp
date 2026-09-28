@@ -1,0 +1,1 @@
+{"name":"sprut_get_hub_info","description":"Get general information about the SprutHub controller (name, model, firmware version, online status).","parameters":{"properties":{},"title":"sprut_get_hub_infoArguments","type":"object"}}

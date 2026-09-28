@@ -1,0 +1,1 @@
+{"name":"sprut_get_device","description":"Get complete details and all characteristics of a specific accessory.\n\nArgs:\n    accessory_id: The ID of the accessory (e.g. 1155).\n","parameters":{"properties":{"accessory_id":{"title":"Accessory Id","type":"integer"}},"required":["accessory_id"],"title":"sprut_get_deviceArguments","type":"object"}}

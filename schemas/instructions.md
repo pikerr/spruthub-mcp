@@ -1,0 +1,1 @@
+MCP Server for controlling and monitoring SprutHub smart home devices (switches, sensors, lights, rooms).
