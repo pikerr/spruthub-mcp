@@ -4,6 +4,7 @@
 import argparse
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,7 @@ from typing import Any
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 
-from spruthub_client import SprutHubClient, load_config
+from spruthub_client import SprutHubClient, load_config, normalize_ws_url
 
 
 def _extract_val(val_dict: Any) -> Any:
@@ -218,6 +219,134 @@ async def cmd_set(args: argparse.Namespace) -> None:
         await client.close()
 
 
+SKILL_MARKDOWN = """---
+name: spruthub
+description: Control and monitor SprutHub smart home (lights, switches, rooms, sensors, temperature) on-demand via lightweight CLI without background daemon overhead.
+---
+
+# SprutHub Smart Home Skill
+
+Use this skill whenever the user asks to inspect, monitor, or control devices in their **SprutHub** smart home (e.g. "включи свет в спальне", "какая температура в кабинете", "список комнат", "выключи розетку").
+
+## Execution Mode
+
+Always execute commands via `uvx` (or local `spruthub-cli`) using `spruthub-cli`. This executes on-demand in ~80 ms without keeping any background daemon or eating RAM.
+
+### Command Format
+
+```bash
+uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli <command> [args]
+```
+
+## Quick Reference
+
+### 1. Hub Status & Rooms
+* **Hub info:**
+  `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli info`
+* **List all rooms (with sensor readings):**
+  `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli rooms`
+
+### 2. Finding & Inspecting Devices
+* **List controllable devices in a specific room:**
+  `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli devices --room <room_id>`
+* **Search devices by name:**
+  `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli devices --search "свет"`
+* **Inspect full device characteristics:**
+  `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli device <accessory_id>`
+
+### 3. Controlling Switches, Lights & Outlets
+* **Turn ON:**
+  `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli switch <accessory_id> on`
+* **Turn OFF:**
+  `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli switch <accessory_id> off`
+
+### 4. Setting Characteristics (Brightness, Target Temp, Modes)
+* **Set specific value:**
+  `uvx --from git+https://github.com/pikerr/spruthub-mcp spruthub-cli set <accessory_id> <service_id> <characteristic_id> <value>`
+
+## Guidelines for the Agent
+1. If the user asks about a room (e.g., "что включено в кабинете?"), run `spruthub-cli rooms` to get the `room_id`, then `spruthub-cli devices --room <id>` to see the exact state.
+2. If turning a switch on/off, use `spruthub-cli switch <id> on/off`. It automatically detects the correct Switch/Lightbulb/Outlet service without needing `sId` or `cId`.
+3. Provide a clear, concise confirmation to the user in Russian.
+"""
+
+
+async def cmd_install(args: argparse.Namespace) -> None:
+    host = args.host
+    token = args.token
+
+    # Load existing config if available
+    config = load_config()
+    if not host:
+        host = config.get("host") or config.get("ws_url")
+    if not token:
+        token = config.get("token")
+
+    if not host or not token:
+        print("Please configure SprutHub connection:")
+        if not host:
+            host = input("SprutHub IP or host (e.g. 192.168.1.100): ").strip()
+        if not token:
+            token = input("SprutHub local password / token: ").strip()
+
+    if not host or not token:
+        print("Error: Both host and token are required.", file=sys.stderr)
+        sys.exit(1)
+
+    # Save XDG config
+    if os.name == "nt":
+        appdata = os.environ.get("APPDATA")
+        cfg_dir = Path(appdata) / "spruthub" if appdata else Path.home() / ".config" / "spruthub"
+    else:
+        xdg_home = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
+        cfg_dir = Path(xdg_home) / "spruthub"
+
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    cfg_file = cfg_dir / "config.json"
+    with open(cfg_file, "w", encoding="utf-8") as f:
+        json.dump({"host": host, "token": token}, f, indent=2)
+    try:
+        cfg_file.chmod(0o600)
+    except Exception:
+        pass
+    print(f"✓ Configuration saved to {cfg_file}")
+
+    # Detect and install skill to known agent directories
+    installed_targets = []
+
+    # Antigravity (~/.gemini/config/skills/spruthub/SKILL.md)
+    gemini_skills = Path.home() / ".gemini" / "config" / "skills" / "spruthub"
+    gemini_skills.mkdir(parents=True, exist_ok=True)
+    (gemini_skills / "SKILL.md").write_text(SKILL_MARKDOWN, encoding="utf-8")
+    installed_targets.append("Antigravity (~/.gemini/config/skills/spruthub/SKILL.md)")
+
+    # Claude Code (~/.claude/skills/spruthub/SKILL.md) if ~/.claude exists
+    claude_dir = Path.home() / ".claude"
+    if claude_dir.exists():
+        claude_skills = claude_dir / "skills" / "spruthub"
+        claude_skills.mkdir(parents=True, exist_ok=True)
+        (claude_skills / "SKILL.md").write_text(SKILL_MARKDOWN, encoding="utf-8")
+        installed_targets.append("Claude Code (~/.claude/skills/spruthub/SKILL.md)")
+
+    for target in installed_targets:
+        print(f"✓ Installed Skill for {target}")
+
+    # Verify connection
+    print("\nVerifying connection to SprutHub...")
+    client = SprutHubClient(ws_url=normalize_ws_url(host), token=token)
+    try:
+        info = await client.get_hub_info()
+        name = info.get("name", "SprutHub")
+        model = info.get("model", "")
+        ver = info.get("version", {}).get("current", {}).get("version", "") if isinstance(info.get("version"), dict) else info.get("version", "")
+        print(f"✓ Success! Connected to {name} (Model: {model}, v{ver})")
+        print("\nAll set! Your AI agent can now seamlessly control your smart home.")
+    except Exception as e:
+        print(f"Warning: Connection check failed: {e}\nPlease verify host and token.", file=sys.stderr)
+    finally:
+        await client.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="spruthub-cli",
@@ -225,6 +354,12 @@ def main() -> None:
     )
     parser.add_argument("--json", action="store_true", help="Output machine-readable JSON")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # install
+    p_inst = subparsers.add_parser("install", help="Self-install SprutHub skill and configure credentials")
+    p_inst.add_argument("--host", help="SprutHub IP or hostname (e.g. 192.168.1.100)")
+    p_inst.add_argument("--token", help="SprutHub local password / token")
+    p_inst.set_defaults(func=cmd_install)
 
     # info
     p_info = subparsers.add_parser("info", help="Get SprutHub info")
